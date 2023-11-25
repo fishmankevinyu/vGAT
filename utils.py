@@ -14,7 +14,7 @@ class CardDataSet(Dataset):
         self.card_frame = card_frame
         self.root_dir = root_dir
         self.transform = transform
-        self.label_onehot, self.nClasses = encode_labels(card_frame['labels'])
+        self.label_onehot, self.nClasses, _ = encode_labels(card_frame['labels'])
         self.filepaths = card_frame['filepaths']
         self.filepaths = [os.path.join(self.root_dir, filepath.replace("/", "\\")) for filepath in self.filepaths]
     def __len__(self):
@@ -32,50 +32,64 @@ def encode_labels(labels):
     classes = sorted(list(set(labels)))
     classes_dict = {c: i for i, c in enumerate(classes)}
     labels = [classes_dict[label] for label in labels]
-    return labels, len(classes)
+    return labels, len(classes), classes
+
+def generate_adj(num_patches):
+        adj = torch.zeros((num_patches * num_patches, num_patches * num_patches))
+        for i in range(0, num_patches):
+            for j in range(0, num_patches):
+                index = i * num_patches + j
+                adj[index, index] = 1
+                if (i > 0):
+                    top = (i - 1) * num_patches + j
+                    adj[index, top] = 1
+                if (i < num_patches - 1):
+                    bottom = (i + 1) * num_patches + j
+                    adj[index, bottom] = 1 
+                if (j > 0):
+                    left = i * num_patches + j - 1
+                    adj[index, left] = 1
+                if (j < num_patches - 1):
+                    right = i * num_patches + j + 1
+                    adj[index, right] = 1
+                if (i > 0 and j > 0):
+                    top_left = (i - 1) * num_patches + (j - 1)
+                    adj[index, top_left] = 1
+                if (i > 0 and j < num_patches - 1):
+                    top_right = (i - 1) * num_patches + (j + 1)
+                    adj[index, top_right] = 1
+                if (i < num_patches - 1 and j > 0):
+                    bottom_left = (i + 1) * num_patches + (j - 1)
+                    adj[index, bottom_left] = 1
+                if (i < num_patches - 1 and j < num_patches - 1):
+                    bottom_right = (i + 1) * num_patches + (j + 1)
+                    adj[index, bottom_right] = 1
+
+        #normalize inputs
+        #adj = normalize_adj(adj + sp.eye(adj.shape[0]))
+
+        #Tensor-lize inputs for cuda
+        return adj
 
 def load_data_card(path="C:\MyProjects\GAT_image\cards.csv"):
     # Load Cards Image Dataset
     card_frame = pd.read_csv(path)
-    #print(card_frame)
     transform = transforms.Compose([
         transforms.ToPILImage(),
         transforms.ToTensor(),
         transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
     ])
+    _, _, classes = encode_labels(card_frame['labels'])
 
-    train_dataset = CardDataSet(card_frame=card_frame.iloc[:7626], transform=transform)
-    test_dataset = CardDataSet(card_frame=card_frame.iloc[7626: 7891], transform=transform)
-    valid_dataset = CardDataSet(card_frame=card_frame.iloc[7891: 8156], transform=transform)
+    train_dataset = CardDataSet(card_frame=card_frame.iloc[:7624], transform=transform)
+    test_dataset = CardDataSet(card_frame=card_frame.iloc[7624: 7889], transform=transform)
+    valid_dataset = CardDataSet(card_frame=card_frame.iloc[7889:], transform=transform)
 
-    patch_size = 16
-    adj = np.zeros((patch_size * patch_size, patch_size * patch_size))
+    patch_size = 8
 
-    for i in range(0, patch_size):
-        for j in range(0, patch_size):
-            index = i * patch_size + j
-            adj[index, index] = 1
-            if (i > 0):
-                top = (i - 1) * patch_size + j
-                adj[index, top] = 1
-            if (i < patch_size - 1):
-                bottom = (i + 1) * patch_size + j
-                adj[index, bottom] = 1 
-            if (j > 0):
-                left = i * patch_size + j - 1
-                adj[index, left] = 1
-            if (j < patch_size - 1):
-                right = i * patch_size + j + 1
-                adj[index, right] = 1
+    adj = generate_adj(patch_size)
 
-
-    #normalize inputs
-    #adj = normalize_adj(adj + sp.eye(adj.shape[0]))
-
-    #Tensor-lize inputs for cuda
-    adj = torch.FloatTensor(np.array(adj))
-
-    return adj, train_dataset, test_dataset, valid_dataset
+    return adj, train_dataset, test_dataset, valid_dataset, classes
 
 def normalize_adj(mx):
     """Row-normalize sparse matrix"""
@@ -86,7 +100,7 @@ def normalize_adj(mx):
     return mx.dot(r_mat_inv_sqrt).transpose().dot(r_mat_inv_sqrt)
 
 def accuracy(output, labels):
-    preds = output.max(1)[1].type_as(labels)
+    preds = output.argmax(dim=1)
     correct = preds.eq(labels).double()
     correct = correct.sum()
     return correct / len(labels)

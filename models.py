@@ -1,20 +1,19 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from layers import GraphAttentionLayer
+from layers import GraphAttentionLayer, MultiGraphAttentionLayer
 from einops.layers.torch import Rearrange
 
 def pair(t):
     return t if isinstance(t, tuple) else (t, t)
 
 class GAT(nn.Module):
-    def __init__(self, bSize, nhid, nclass, dropout, alpha, nheads):
+    def __init__(self, n_layers, embed_dim, nhid, nclass, dropout, alpha, nheads, concat):
         """Dense version of GAT."""
         super(GAT, self).__init__()
         image_size = 224
-        patch_size = 14
+        patch_size = 28
         channel_size = 3
-        dim = 128
 
         image_height, image_width = pair(image_size)
         patch_height, patch_width = pair(patch_size)
@@ -26,31 +25,44 @@ class GAT(nn.Module):
         self.to_patch_embedding = nn.Sequential(
             Rearrange('b c (h p1) (w p2) -> b (h w) (p1 p2 c)', p1 = patch_height, p2 = patch_width),
             nn.LayerNorm(patch_dim * channel_size),
-            nn.Linear(patch_dim * channel_size, dim),
-            nn.LayerNorm(dim),
+            nn.Linear(patch_dim * channel_size, embed_dim),
+            nn.LayerNorm(embed_dim),
         )
         self.dropout = dropout
-        self.attentions = [GraphAttentionLayer(bSize, dim, nhid, dropout=dropout, alpha=alpha, concat=True) for _ in range(nheads)]
-        for i, attention in enumerate(self.attentions):
-            self.add_module('attention_{}'.format(i), attention)
+        self.multiAttentions = [MultiGraphAttentionLayer(embed_dim, nhid, nheads, 
+                                                    dropout=dropout, 
+                                                    alpha=alpha, 
+                                                    concat=concat)]
+        for _ in range(n_layers - 1):
+            if concat:
+                self.multiAttentions.append(MultiGraphAttentionLayer(nheads * nhid, nhid, nheads, 
+                                                    dropout=dropout, 
+                                                    alpha=alpha, 
+                                                    concat=concat))
+            else:
+                self.multiAttentions.append(MultiGraphAttentionLayer(nhid, nhid, nheads, 
+                                                    dropout=dropout, 
+                                                    alpha=alpha, 
+                                                    concat=concat))
+
+        for i, attention_layer in enumerate(self.multiAttentions):
+            self.add_module('multi-attention_{}'.format(i), attention_layer)
         #need to aggregate all nodes info
-        self.out_att = GraphAttentionLayer(bSize, nhid, nclass, dropout=dropout, alpha=alpha, concat=False)
-        self.linear = nn.Linear(num_patches * nclass, nclass)
-        self.leakyrelu = nn.LeakyReLU(alpha)
+        if concat:
+            self.out_att = MultiGraphAttentionLayer(nhid * nheads, nhid, 1, dropout=dropout, alpha=alpha, concat=False)
+        else:
+            self.out_att = MultiGraphAttentionLayer(nhid, nhid, 1, dropout=dropout, alpha=alpha, concat=False)
+        self.linear = nn.Linear(nhid, nclass)
 
     def forward(self, x, adj):
         x = self.to_patch_embedding(x)
         x = F.dropout(x, self.dropout, training=self.training)
-        x = torch.mean(torch.stack([att(x, adj) for att in self.attentions]), dim=1)
-        print("average pooling")
-        print(x.shape)
-        x = F.dropout(x, self.dropout, training=self.training)
-        x = F.elu(self.out_att(x, adj))
-        print("output")
-        print(x.shape)
-        x = self.leakyrelu(self.linear(x.flatten(start_dim=1)))
-        x = F.softmax(x, dim=1)
-        print("pred")
-        print(x)
+        for attentions_layer in self.multiAttentions:
+            x = attentions_layer(x, adj)
+        x = self.out_att(x, adj)
+        x = torch.mean(x, dim=1)
+        x = self.linear(x)
+        x = F.log_softmax(x, dim=1)
         return x
+   
 
