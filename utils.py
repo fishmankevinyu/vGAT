@@ -34,8 +34,9 @@ def encode_labels(labels):
     labels = [classes_dict[label] for label in labels]
     return labels, len(classes), classes
 
-def generate_adj(num_patches):
+def generate_adj(num_patches, cls=False):
         adj = torch.zeros((num_patches * num_patches, num_patches * num_patches))
+
         for i in range(0, num_patches):
             for j in range(0, num_patches):
                 index = i * num_patches + j
@@ -67,11 +68,14 @@ def generate_adj(num_patches):
 
         #normalize inputs
         #adj = normalize_adj(adj + sp.eye(adj.shape[0]))
-
+        if cls:
+            adj = torch.cat((torch.ones(1,num_patches * num_patches), adj), dim=0)
+            adj = torch.cat((torch.zeros(num_patches * num_patches + 1, 1), adj), dim=1)
+            adj[0, 0] = 1
         #Tensor-lize inputs for cuda
         return adj
 
-def load_data_card(path="C:\MyProjects\GAT_image\cards.csv"):
+def load_data_card(path="C:\MyProjects\GAT_image\cards.csv", cls=False):
     # Load Cards Image Dataset
     card_frame = pd.read_csv(path)
     transform = transforms.Compose([
@@ -87,7 +91,7 @@ def load_data_card(path="C:\MyProjects\GAT_image\cards.csv"):
 
     patch_size = 8
 
-    adj = generate_adj(patch_size)
+    adj = generate_adj(patch_size, cls)
 
     return adj, train_dataset, test_dataset, valid_dataset, classes
 
